@@ -1,4 +1,4 @@
-module add (
+module add #(parameter SYNC_STAGES = 0) (
   input                     CLK    ,
   input                     RSTn   ,
   input                     DVI    ,
@@ -9,262 +9,305 @@ module add (
   output logic [15:0]       DO
 );
 
-  logic signed [ 1:0][ 6:0] true_exponent      ;
-  logic signed [ 6:0]       largest_exponent   ;
-  logic        [ 1:0][10:0] significand        ;
-  logic        [ 6:0]       shift              ;
-  logic signed [ 1:0][41:0] true_significands  ;
-  logic signed [41:0]       presum             ;
-  logic signed [41:0]       sum_of_significands;
+  localparam EN_FINAL_FF = SYNC_STAGES > 0 ? 1'b1 : 1'b0;
+  localparam EN_POST_FF  = SYNC_STAGES > 1 ? 1'b1 : 1'b0;
+  localparam EN_ADD_FF   = SYNC_STAGES > 2 ? 1'b1 : 1'b0;
+  localparam EN_PRE_FF   = SYNC_STAGES > 3 ? 1'b1 : 1'b0;
+  localparam EN_RECON_FF = SYNC_STAGES > 4 ? 1'b1 : 1'b0;
 
-  logic sign;
+
+
+  logic signed [ 6:0]       largest_exponent    ;
+  logic        [ 1:0][10:0] significand         ;
+  logic        [ 6:0]       shift               ;
+  logic signed [ 1:0][41:0] true_significands   ;
+  logic signed [41:0]       sum_of_significands ;
+  logic signed [41:0]       sum_of_significands_;
 
   logic signed [ 6:0] actual_exponent   ;
   logic        [10:0] actual_significand;
 
-  logic [ 3:0] skip1      ;
-  logic [ 5:0] stage1_exp ;
-  logic [19:0] stage1_data;
+  logic [1:0][1:0] op_signs ;
+  logic [1:0]      op_signs_;
 
-  logic [ 7:0] skip2      ;
-  logic [ 5:0] stage2_exp ;
-  logic [10:0] stage2_data;
-
-
-  logic overflow ;
-  logic zero     ;
-  logic subnormal;
-
-  logic signed [1:0][6:0] foo;
+  logic sign_pp     ;
+  logic sign        ;
+  logic largest_sign;
 
   logic [9:0] output_data;
+  logic       actual_sign;
+  logic       final_sign ;
 
-  logic final_sign;
+  logic [2:0]      extreme_type   ;
+  logic [2:0]      extreme_type_  ;
+  logic [3:0][2:0] extreme_type_pp;
+  logic            extreme_sign   ;
+  logic            extreme_sign_  ;
+  logic [3:0]      extreme_sign_pp;
+
+  logic signed [1:0][6:0] largest_exponent_pp;
+  logic signed [6:0]      largest_exponent_  ;
+
+  logic recon_dv;
+  logic pre_dv  ;
+  logic add_dv  ;
+  logic post_dv ;
+  logic final_dv;
 
 
-  always_comb begin
-    /*  Получаем "настоящую" экспоненту
-    */
-    // if (DI_TYPE[0][5])
-      true_exponent[0] = signed'({1'b0, DI[0][14:10]}) - 15;
-    // else
-    //   true_exponent[0] = signed'({1'b0, DI[0][14:10]}) - 14;
-
-    // if (DI_TYPE[1][5])
-      true_exponent[1] = signed'({1'b0, DI[1][14:10]}) - 15;
-    // else
-    //   true_exponent[1] = signed'({1'b0, DI[1][14:10]}) - 14;
-
-    if (DI_TYPE[0][5])
-      foo[0] = signed'({1'b0, DI[0][14:10]}) - 15;
+  always_comb begin : extr_val_detect
+    if (DI_TYPE[0][0] || DI_TYPE[1][0])
+      extreme_type[0] = 1'b1;
     else
-      foo[0] = signed'({1'b0, DI[0][14:10]}) - 14;
+      extreme_type[0] = 1'b0;
 
-    if (DI_TYPE[1][5])
-      foo[1] = signed'({1'b0, DI[1][14:10]}) - 15;
+    if ((DI_TYPE[0][1] || DI_TYPE[1][1]) || (DI_TYPE[0][2] && DI_TYPE[1][2] && (DI[0][15] ^ DI[1][15])))
+      extreme_type[1] = 1'b1;
     else
-      foo[1] = signed'({1'b0, DI[1][14:10]}) - 14;
+      extreme_type[1] = 1'b0;
 
-    /*  Находим наибольшую экспоненту и определяем на сколько бит сдвигать мантиссу
-    */
-    if (signed'(true_exponent[0]) < signed'(true_exponent[1])) begin
-      if (DI_TYPE[1][5])
-        largest_exponent = true_exponent[1] + 1;
-      else
-        largest_exponent = true_exponent[1] + 2;
-
-      sign = DI[1][15];
-
-      // shift          = true_exponent[1] - true_exponent[0];
-      shift          = foo[1] - foo[0];
-      significand[0] = {DI_TYPE[1][5], DI[1][9:0]};
-      significand[1] = {DI_TYPE[0][5], DI[0][9:0]};
-    end else begin
-      if (DI_TYPE[0][5])
-        largest_exponent = true_exponent[0] + 1;
-      else
-        largest_exponent = true_exponent[0] + 2;
-
-      sign = DI[0][15];
-
-      // shift          = true_exponent[0] - true_exponent[1];
-      shift          = foo[0] - foo[1];
-      significand[0] = {DI_TYPE[0][5], DI[0][9:0]};
-      significand[1] = {DI_TYPE[1][5], DI[1][9:0]};
-    end
-
-    /*  Нормализация операндов
-    */
-    true_significands[0][41]    = 1'b0; // sign bit
-    true_significands[0][40]    = 1'b0; // overflow bit
-    true_significands[0][39:29] = significand[0]; // actual significand
-    true_significands[0][28:0]  = 'b0;
-
-    true_significands[1][41]   = 1'b0; // sign bit
-    true_significands[1][40]   = 1'b0; // overflow bit
-    true_significands[1][39:0] = {significand[1], 29'd0} >> shift; // normalized significand
-
-    /*  Складываем мантиссы
-    */
-    if (DI[0][15] ^ DI[1][15])
-      presum = true_significands[0] - true_significands[1];
+    if ((DI_TYPE[0][2] && DI_TYPE[1][2] && (DI[0][15] ~^ DI[1][15])) || (DI_TYPE[0][2] || DI_TYPE[1][2]))
+      extreme_type[2] = 1'b1;
     else
-      presum = true_significands[0] + true_significands[1];
+      extreme_type[2] = 1'b0;
 
-    if (presum[41])
-      sum_of_significands = -presum;
+    if (|DI_TYPE[0][2:0])
+      extreme_sign = DI[0][15];
     else
-      sum_of_significands = presum;
-
-    final_sign = presum[41] ^ sign;
-
-    /*  Underflow случай
-     */
-    for (int i = 0; i < 4; i++)
-      if (sum_of_significands[40 - i*8 -: 8] == {8{sum_of_significands[41]}})
-        skip1[3-i] = 1'b1;
-      else
-        skip1[3-i] = 1'b0;
-
-    casez (skip1)
-      4'b1111: begin
-        stage1_data = {sum_of_significands[9:0], {10{1'b0}}};
-        stage1_exp = 6'd32;
-      end
-
-      4'b111?: begin
-        stage1_data = {sum_of_significands[17:0], {2{1'b0}}};
-        stage1_exp = 6'd24;
-      end
-
-      4'b11??: begin
-        stage1_data = sum_of_significands[25 -: 20];
-        stage1_exp = 6'd16;
-      end
-
-      4'b1???: begin
-        stage1_data = sum_of_significands[33 -: 20];
-        stage1_exp = 6'd8;
-      end
-
-      default: begin
-        stage1_data = sum_of_significands[41 -: 20];
-        stage1_exp = 6'd0;
-      end
-    endcase
-
-    /*  Stage 2
-     */
-    casez (skip2)
-      8'b11111111: begin
-        stage2_data = stage1_data[10 -: 11];
-        stage2_exp = 8;
-      end
-
-      8'b1111111?: begin
-        stage2_data = stage1_data[11 -: 11];
-        stage2_exp = 7;
-      end
-
-      8'b111111??: begin
-        stage2_data = stage1_data[12 -: 11];
-        stage2_exp = 6;
-      end
-
-      8'b11111???: begin
-        stage2_data = stage1_data[13 -: 11];
-        stage2_exp = 5;
-      end
-
-      8'b1111????: begin
-        stage2_data = stage1_data[14 -: 11];
-        stage2_exp = 4;
-      end
-
-      8'b111?????: begin
-        stage2_data = stage1_data[15 -: 11];
-        stage2_exp = 3;
-      end
-
-      8'b11??????: begin
-        stage2_data = stage1_data[16 -: 11];
-        stage2_exp = 2;
-      end
-
-      8'b1???????: begin
-        stage2_data = stage1_data[17 -: 11];
-        stage2_exp = 1;
-      end
-
-      default: begin
-        stage2_data = stage1_data[18 -: 11];
-        stage2_exp = 0;
-      end
-    endcase
-
-    actual_exponent = largest_exponent - stage1_exp - stage2_exp;
-    actual_significand = stage2_data;
-
-    /*  Снова нормализация
-     */
-    case (actual_exponent)
-      -7'd24 : output_data = actual_significand[10:1] >> 9;
-      -7'd23 : output_data = actual_significand[10:1] >> 8;
-      -7'd22 : output_data = actual_significand[10:1] >> 7;
-      -7'd21 : output_data = actual_significand[10:1] >> 6;
-      -7'd20 : output_data = actual_significand[10:1] >> 5;
-      -7'd19 : output_data = actual_significand[10:1] >> 4;
-      -7'd18 : output_data = actual_significand[10:1] >> 3;
-      -7'd17 : output_data = actual_significand[10:1] >> 2;
-      -7'd16 : output_data = actual_significand[10:1] >> 1;
-      -7'd15 : output_data = actual_significand[10:1];
-      default: output_data = actual_significand[ 9:0];
-    endcase
-
-    DO[15] = final_sign;
-
-    if (overflow) begin
-      DO[14:10] = 5'b11111;
-      DO[ 9: 0] = 10'h000;
-      DO_TYPE = 6'b000100;
-    end else if (zero) begin
-      DO[14:0] = 15'h0000;
-      DO_TYPE = 6'b001000;
-    end else if (subnormal) begin
-      DO[14:10] = 5'b00000;
-      DO[ 9: 0] = output_data;
-      DO_TYPE = 6'b010000;
-    end else begin
-      DO[14:10] = actual_exponent + 15;
-      DO[ 9: 0] = output_data;
-      DO_TYPE = 6'b100000;
-    end
+      extreme_sign = DI[1][15];
   end
 
-  for (genvar i = 1; i < 9; i++)
-    always_comb
-      if (stage1_data[18 -: i] == {i{stage1_data[19]}})
-        skip2[8-i] = 1'b1;
-      else
-        skip2[8-i] = 1'b0;
-
-  always_comb begin
-    DVO = DVI;
-
-    if (((signed'(actual_exponent) == 7'sd15) && (&actual_significand) && |sum_of_significands[28:0]) || (signed'(actual_exponent) > 7'sd15))
-      overflow = 1'b1;
-    else
-      overflow = 1'b0;
-
-    if (((signed'(actual_exponent) == -7'sd24) && (DO[9:0] == 'b0) && (sum_of_significands == 'b0)) || (signed'(actual_exponent) < -7'sd24))
-      zero = 1'b1;
-    else
-      zero = 1'b0;
-
-    if (actual_exponent < -14)
-      subnormal = 1'b1;
-    else
-      subnormal = 1'b0;
+  always_ff @(posedge CLK) begin
+    extreme_type_pp <= {extreme_type_pp[2:0], extreme_type};
+    extreme_sign_pp <= {extreme_sign_pp[2:0], extreme_sign};
   end
+
+
+  always_ff @(posedge CLK)
+    op_signs <= {op_signs[0], {DI[1][15], DI[0][15]}};
+
+  /*  Get true exponents
+   */
+  recognize_operands #(EN_RECON_FF) op_recon (
+    .CLK             (CLK             ),
+    .RSTn            (RSTn            ),
+    .DI_TYPE         (DI_TYPE         ),
+    .DI              (DI              ),
+    .DVI             (recon_dv        ),
+    .LARGEST_EXPONENT(largest_exponent),
+    .LARGEST_SIGN    (sign            ),
+    .SHIFT           (shift           ),
+    .SIGNIFICANDS    (significand     )
+  );
+
+  always_ff @(posedge CLK)
+    sign_pp <= sign;
+
+  always_ff @(posedge CLK)
+    largest_exponent_pp <= {largest_exponent_pp[0], largest_exponent};
+
+  /*  Normalize smallest operand
+   */
+  pre_add_norm #(EN_PRE_FF) pre_norm (
+    .CLK              (CLK              ),
+    .RSTn             (RSTn             ),
+    .DVI              (pre_dv           ),
+    .SIGNIFICANDS     (significand      ),
+    .SHIFT            (shift            ),
+    .TRUE_SIGNIFICANDS(true_significands)
+  );
+
+  generate
+    if (SYNC_STAGES > 4)
+      always_comb begin
+        op_signs_    = op_signs[1];
+        largest_sign = sign_pp;
+      end
+    else if (SYNC_STAGES > 3)
+      always_comb begin
+        op_signs_    = op_signs[0];
+        largest_sign = sign_pp;
+      end
+    else
+      always_comb begin
+        op_signs_    = {DI[1][15], DI[0][15]};
+        largest_sign = sign;
+      end
+  endgenerate
+
+  /*  Sum of significands
+   */
+  sig_add_abs #(EN_ADD_FF) add_abs (
+    .CLK                (CLK                ),
+    .RSTn               (RSTn               ),
+    .DVI                (add_dv             ),
+    .LARGEST_SIGN       (largest_sign       ),
+    .OP_SIGNS           (op_signs_          ),
+    .SIGNIFICANDS       (true_significands  ),
+    .SIGN               (final_sign         ),
+    .SUM_OF_SIGNIFICANDS(sum_of_significands)
+  );
+
+  generate
+    if (SYNC_STAGES > 3)
+      always_comb
+        largest_exponent_ = largest_exponent_pp[1];
+    else if (SYNC_STAGES > 2)
+      always_comb
+        largest_exponent_ = largest_exponent_pp[0];
+    else
+      always_comb
+        largest_exponent_ = largest_exponent;
+  endgenerate
+
+  /*  < 2^(-14) normalization
+   */
+  post_add_norm #(EN_POST_FF) post_norm (
+    .CLK                (CLK                ),
+    .RSTn               (RSTn               ),
+    .DVI                (post_dv            ),
+    .LARGEST_EXPONENT   (largest_exponent_  ),
+    .SUM_OF_SIGNIFICANDS(sum_of_significands),
+    .ACTUAL_EXPONENT    (actual_exponent    ),
+    .ACTUAL_SIGNIFICAND (actual_significand ),
+    .ACTUAL_OUTPUT_DATA (output_data        )
+  );
+
+  generate
+    if (SYNC_STAGES > 1)
+      always_ff @(posedge CLK)
+        actual_sign <= final_sign;
+    else
+      always_comb
+        actual_sign = final_sign;
+  endgenerate
+
+  generate
+    if (SYNC_STAGES > 4)
+      always_comb begin
+        extreme_type_ = extreme_type_pp[3];
+        extreme_sign_ = extreme_sign_pp[3];
+      end
+    else if (SYNC_STAGES > 3)
+      always_comb begin
+        extreme_type_ = extreme_type_pp[2];
+        extreme_sign_ = extreme_sign_pp[2];
+      end
+    else if (SYNC_STAGES > 2)
+      always_comb begin
+        extreme_type_ = extreme_type_pp[1];
+        extreme_sign_ = extreme_sign_pp[1];
+      end
+    else if (SYNC_STAGES > 1)
+      always_comb begin
+        extreme_type_ = extreme_type_pp[0];
+        extreme_sign_ = extreme_sign_pp[0];
+      end
+    else
+      always_comb begin
+        extreme_type_ = extreme_type;
+        extreme_sign_ = extreme_sign;
+      end
+  endgenerate
+
+  generate
+    if (SYNC_STAGES > 2)
+      always_ff @(posedge CLK)
+        sum_of_significands_ <= sum_of_significands;
+    else
+      always_comb
+        sum_of_significands_ = sum_of_significands;
+  endgenerate
+
+  /*  Final result
+   */
+  final_result #(EN_FINAL_FF) final_res (
+    .CLK                (CLK                 ),
+    .RSTn               (RSTn                ),
+    .DVI                (final_dv            ),
+    .EXTREME_TYPE       (extreme_type_       ),
+    .EXTREME_SIGN       (extreme_sign_       ),
+    .ACTUAL_SIGN        (actual_sign         ),
+    .SUM_OF_SIGNIFICANDS(sum_of_significands_),
+    .ACTUAL_EXPONENT    (actual_exponent     ),
+    .ACTUAL_SIGNIFICAND (actual_significand  ),
+    .ACTUAL_OUTPUT_DATA (output_data         ),
+    .DO                 (DO                  ),
+    .DO_TYPE            (DO_TYPE             )
+  );
+
+  logic [5:0] dv_pp;
+
+  always_comb
+    dv_pp[0] = DVI;
+
+  always_ff @(negedge RSTn, posedge CLK)
+    if (!RSTn)
+      dv_pp[5:1] <= 'b0;
+    else
+      dv_pp[5:1] <= dv_pp[4:0];
+
+  generate
+    if (SYNC_STAGES > 4)
+      always_comb begin
+        DVO = dv_pp[5];
+
+        recon_dv = dv_pp[0];
+        pre_dv   = dv_pp[1];
+        add_dv   = dv_pp[2];
+        post_dv  = dv_pp[3];
+        final_dv = dv_pp[4];
+      end
+    else if (SYNC_STAGES > 3)
+      always_comb begin
+        DVO = dv_pp[4];
+
+        recon_dv = 1'b0;
+        pre_dv   = dv_pp[0];
+        add_dv   = dv_pp[1];
+        post_dv  = dv_pp[2];
+        final_dv = dv_pp[3];
+      end
+    else if (SYNC_STAGES > 2)
+      always_comb begin
+        DVO = dv_pp[3];
+
+        recon_dv = 1'b0;
+        pre_dv   = 1'b0;
+        add_dv   = dv_pp[0];
+        post_dv  = dv_pp[1];
+        final_dv = dv_pp[2];
+      end
+    else if (SYNC_STAGES > 1)
+      always_comb begin
+        DVO = dv_pp[2];
+
+        recon_dv = 1'b0;
+        pre_dv   = 1'b0;
+        add_dv   = 1'b0;
+        post_dv  = dv_pp[0];
+        final_dv = dv_pp[1];
+      end
+    else if (SYNC_STAGES > 0)
+      always_comb begin
+        DVO = dv_pp[1];
+
+        recon_dv = 1'b0;
+        pre_dv   = 1'b0;
+        add_dv   = 1'b0;
+        post_dv  = 1'b0;
+        final_dv = dv_pp[0];
+      end
+    else
+      always_comb begin
+        DVO = dv_pp[0];
+
+        recon_dv = 1'b0;
+        pre_dv   = 1'b0;
+        add_dv   = 1'b0;
+        post_dv  = 1'b0;
+        final_dv = 1'b0;
+      end
+  endgenerate
 
 endmodule
