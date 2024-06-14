@@ -82,7 +82,6 @@ module add #(parameter SYNC_STAGES = 0) (
     extreme_sign_pp <= {extreme_sign_pp[2:0], extreme_sign};
   end
 
-
   always_ff @(posedge CLK)
     op_signs <= {op_signs[0], {DI[1][15], DI[0][15]}};
 
