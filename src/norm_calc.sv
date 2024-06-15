@@ -5,7 +5,8 @@ module norm_calc #(parameter bit EN_OUT_FF = 1'b0) (
   input               [21:0]      SIGNIFICAND_MUL    ,
   output logic                    SO                 , // Subnormal output
   output logic signed [ 6:0]      EXPONENT_PRODUCT   ,
-  output logic        [10:0]      SIGNIFICAND_PRODUCT
+  output logic        [10:0]      SIGNIFICAND_PRODUCT,
+  output logic        [ 2:0]      TYPE
 );
 
   logic signed [ 6:0] exp_prod           ;
@@ -30,7 +31,7 @@ module norm_calc #(parameter bit EN_OUT_FF = 1'b0) (
     else
       prod_zero = 1'b0;
 
-    if (exp_prod < -14)
+    if ((exp_prod < -14) && (exp_prod > -25))
       prod_sub = 1'b1;
     else
       prod_sub = 1'b0;
@@ -44,8 +45,8 @@ module norm_calc #(parameter bit EN_OUT_FF = 1'b0) (
   always_comb begin
     case ({prod_zero, prod_sub, prod_inf})
       3'b001: begin
-        exponent_product = 'b1;
-        significand_product = 'b0;
+        exponent_product = 6'b111111;
+        significand_product = 11'b00000000000;
       end
 
       3'b010: begin
@@ -54,8 +55,8 @@ module norm_calc #(parameter bit EN_OUT_FF = 1'b0) (
       end
 
       3'b100: begin
-        exponent_product = 'b0;
-        significand_product = 'b0;
+        exponent_product = 6'b000000;
+        significand_product = 11'b00000000000;
       end
 
       default: begin
@@ -76,12 +77,14 @@ module norm_calc #(parameter bit EN_OUT_FF = 1'b0) (
           SO                  <= prod_sub;
           EXPONENT_PRODUCT    <= exponent_product;
           SIGNIFICAND_PRODUCT <= significand_product;
+          TYPE                <= {prod_zero, prod_sub, prod_inf};
         end
     else
       always_comb begin
         SO                  = prod_sub;
         EXPONENT_PRODUCT    = exponent_product;
         SIGNIFICAND_PRODUCT = significand_product;
+        TYPE                = {prod_zero, prod_sub, prod_inf};
       end
   endgenerate
 

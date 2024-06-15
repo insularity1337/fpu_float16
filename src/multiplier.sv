@@ -1,7 +1,4 @@
-module multiplier #(
-  parameter     SYNC_STAGES = 0   ,
-  parameter bit FOO         = 1'b0
-) (
+module multiplier #(parameter SYNC_STAGES = 0) (
   input                     CLK   ,
   input                     RSTn  ,
   input                     DVI   ,
@@ -15,6 +12,8 @@ module multiplier #(
   localparam EN_NORM_FF    = SYNC_STAGES > 1 ? 1'b1 : 1'b0;
   localparam EN_MUL_FF     = SYNC_STAGES > 2 ? 1'b1 : 1'b0;
   localparam EN_CAT_FF     = SYNC_STAGES > 3 ? 1'b1 : 1'b0;
+
+  logic [2:0] normal_type;
 
   logic [4:0] valid;
 
@@ -115,7 +114,8 @@ module multiplier #(
     .SIGNIFICAND_MUL    (significand_mul    ),
     .SO                 (subnormal_prod     ),
     .EXPONENT_PRODUCT   (exponent_product   ),
-    .SIGNIFICAND_PRODUCT(significand_product)
+    .SIGNIFICAND_PRODUCT(significand_product),
+    .TYPE               (normal_type        )
   );
 
   logic [ 5:0] extr_data_type;
@@ -162,6 +162,7 @@ module multiplier #(
     .EXTR_DATA          (extr_data          ),
     .SUB_V              (subnormal_prod     ),
     .SIGN               (subnormal_sign     ),
+    .NORMAL_TYPE        (normal_type        ),
     .EXPONENT_PRODUCT   (exponent_product   ),
     .SIGNIFICAND_PRODUCT(significand_product),
     .P_TYPE             (P_TYPE             ),

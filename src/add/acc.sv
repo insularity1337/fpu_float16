@@ -42,34 +42,55 @@ module acc #(parameter SYNC_STAGES = 0) (
   logic            extreme_sign_  ;
   logic [1:0]      extreme_sign_pp;
 
+  logic [15:0] input_data;
 
 
-  always_comb begin : extr_val_detect
-    if (DI_TYPE[0])
-      extreme_type[0] = 1'b1;
-    else
-      extreme_type[0] = 1'b0;
 
-    if (DI_TYPE[1])
-      extreme_type[1] = 1'b1;
-    else
-      extreme_type[1] = 1'b0;
+  always_ff @(negedge RSTn, posedge CLK)
+    if (!RSTn) begin
+      extreme_type <= 3'b000;
+      extreme_sign <= 1'b0;
+    end else if (DVI && (RELEASE || (!(|extreme_type) && |DI_TYPE[2:0]))) begin
+      extreme_type <= DI_TYPE;
+      extreme_sign <= DI[15];
+    end
 
-    if (DI_TYPE[2])
-      extreme_type[2] = 1'b1;
-    else
-      extreme_type[2] = 1'b0;
-
-    if (|DI_TYPE[2:0])
-      extreme_sign = DI[15];
-    else
-      extreme_sign = 1'b0;
+  always_comb begin
+    extreme_type_pp[0] = extreme_type;
+    extreme_sign_pp[0] = extreme_sign;
   end
 
   always_ff @(posedge CLK) begin
-    extreme_type_pp <= {extreme_type_pp[0], extreme_type};
-    extreme_sign_pp <= {extreme_sign_pp[0], extreme_sign};
+    extreme_type_pp[1] <= extreme_type_pp[0];
+    extreme_sign_pp[1] <= extreme_sign_pp[0];
   end
+
+  // always_comb begin : extr_val_detect
+  //   if (DI_TYPE[0])
+  //     extreme_type[0] = 1'b1;
+  //   else
+  //     extreme_type[0] = 1'b0;
+
+  //   if (DI_TYPE[1])
+  //     extreme_type[1] = 1'b1;
+  //   else
+  //     extreme_type[1] = 1'b0;
+
+  //   if (DI_TYPE[2])
+  //     extreme_type[2] = 1'b1;
+  //   else
+  //     extreme_type[2] = 1'b0;
+
+  //   if (|DI_TYPE[2:0])
+  //     extreme_sign = DI[15];
+  //   else
+  //     extreme_sign = 1'b0;
+  // end
+
+  // always_ff @(posedge CLK) begin
+  //   extreme_type_pp <= {extreme_type_pp[0], extreme_type};
+  //   extreme_sign_pp <= {extreme_sign_pp[0], extreme_sign};
+  // end
 
   always_comb
     dv_pp[0] = DVI;
@@ -78,17 +99,23 @@ module acc #(parameter SYNC_STAGES = 0) (
     dv_pp[4:1] <= dv_pp[3:0];
 
   always_comb begin
-    presig[10] = DI_TYPE[5];
-    presig[9:0] = DI[9:0];
+    // +/- zero exception
+    if (DI_TYPE[3])
+      input_data = 16'h0000;
+    else
+      input_data = DI;
 
-    if (DI[15])
+    presig[10] = DI_TYPE[5];
+    presig[9:0] = /*DI*/input_data[9:0];
+
+    if (/*DI*/input_data[15])
       new_significand_ = (presig[10:0] ^ {11{1'b1}}) + 1;
     else
       new_significand_ = presig;
 
-    new_significand_[11] = DI[15];
+    new_significand_[11] = /*DI*/input_data[15];
 
-    shift = 30 - DI_TYPE[4] - DI[14:10];
+    shift = 30 - DI_TYPE[4] - /*DI*/input_data[14:10];
 
     new_significand[41:0] = signed'({new_significand_[11], new_significand_, 29'd0}) >>> shift;
 
@@ -123,18 +150,18 @@ module acc #(parameter SYNC_STAGES = 0) (
   );
 
   always_ff @(posedge CLK)
-    sign <= {sign[0], RELEASE ? new_significand[41] : sig_sum[41]};
+    sign <= {sign[0], sig_prod[41]/*RELEASE ? new_significand[41] : sig_sum[41]*/};
 
   generate
-    if (SYNC_STAGES > 1)
+    if (SYNC_STAGES > 2)
       always_comb
         actual_sign = sign[1];
-    else if (SYNC_STAGES > 0)
+    else if (SYNC_STAGES > 1)
       always_comb
         actual_sign = sign[0];
     else
       always_comb
-        actual_sign = sig_sum[41];
+        actual_sign = sig_prod[41]/*sig_sum[41]*/;
   endgenerate
 
   generate
