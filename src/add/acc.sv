@@ -1,4 +1,8 @@
-module acc #(parameter SYNC_STAGES = 0) (
+module acc #(
+  parameter             SYNC_STAGES = 0   ,
+  parameter bit         MODE        = 1'b0,
+  parameter logic [5:0] RELEASE_CNT = 6'd2
+) (
   input               CLK    ,
   input               RSTn   ,
   input               DVI    ,
@@ -44,13 +48,48 @@ module acc #(parameter SYNC_STAGES = 0) (
 
   logic [15:0] input_data;
 
+  logic output_valid;
 
+  logic [5:0] rel_cnt ;
+  logic       rel     ;
+  logic       release_;
+
+  always_ff @(negedge RSTn, posedge CLK)
+    if (!RSTn)
+      rel_cnt <= 6'd0;
+    else begin
+      if (DVI)
+        if (rel_cnt < RELEASE_CNT-1)
+          rel_cnt <= rel_cnt + 1;
+        else
+          rel_cnt <= 6'd0;
+    end
+
+  always_ff @(negedge RSTn, posedge CLK)
+    if (!RSTn)
+      rel <= 1'b0;
+    else begin
+      if (DVI)
+        if (rel_cnt == RELEASE_CNT-1)
+          rel <= 1'b1;
+        else
+          rel <= 1'b0;
+    end
+
+  generate
+    if (MODE)
+      always_comb
+        release_ = rel;
+    else
+      always_comb
+        release_ = RELEASE;
+  endgenerate
 
   always_ff @(negedge RSTn, posedge CLK)
     if (!RSTn) begin
       extreme_type <= 3'b000;
       extreme_sign <= 1'b0;
-    end else if (DVI && (RELEASE || (!(|extreme_type) && |DI_TYPE[2:0]))) begin
+    end else if (DVI && (release_/*RELEASE*/ || (!(|extreme_type) && |DI_TYPE[2:0]))) begin
       extreme_type <= DI_TYPE;
       extreme_sign <= DI[15];
     end
@@ -64,33 +103,6 @@ module acc #(parameter SYNC_STAGES = 0) (
     extreme_type_pp[1] <= extreme_type_pp[0];
     extreme_sign_pp[1] <= extreme_sign_pp[0];
   end
-
-  // always_comb begin : extr_val_detect
-  //   if (DI_TYPE[0])
-  //     extreme_type[0] = 1'b1;
-  //   else
-  //     extreme_type[0] = 1'b0;
-
-  //   if (DI_TYPE[1])
-  //     extreme_type[1] = 1'b1;
-  //   else
-  //     extreme_type[1] = 1'b0;
-
-  //   if (DI_TYPE[2])
-  //     extreme_type[2] = 1'b1;
-  //   else
-  //     extreme_type[2] = 1'b0;
-
-  //   if (|DI_TYPE[2:0])
-  //     extreme_sign = DI[15];
-  //   else
-  //     extreme_sign = 1'b0;
-  // end
-
-  // always_ff @(posedge CLK) begin
-  //   extreme_type_pp <= {extreme_type_pp[0], extreme_type};
-  //   extreme_sign_pp <= {extreme_sign_pp[0], extreme_sign};
-  // end
 
   always_comb
     dv_pp[0] = DVI;
@@ -126,7 +138,7 @@ module acc #(parameter SYNC_STAGES = 0) (
     if (!RSTn) begin
       sig_prod <= 'b0;
     end else if (DVI) begin
-      if (RELEASE)
+      if (release_/*RELEASE*/)
         sig_prod <= new_significand;
       else
         sig_prod <= sig_sum;
@@ -195,22 +207,47 @@ module acc #(parameter SYNC_STAGES = 0) (
   generate
     if (SYNC_STAGES > 1)
       always_comb begin
-        post_dv  = dv_pp[1];
-        final_dv = dv_pp[2];
-        DVO      = dv_pp[3];
+        post_dv      = dv_pp[1];
+        final_dv     = dv_pp[2];
+        output_valid = dv_pp[3];
       end
     else if (SYNC_STAGES > 0)
       always_comb begin
-        post_dv  = 1'b0;
-        final_dv = dv_pp[1];
-        DVO      = dv_pp[2];
+        post_dv      = 1'b0;
+        final_dv     = dv_pp[1];
+        output_valid = dv_pp[2];
       end
     else
       always_comb begin
-        post_dv  = 1'b0;
-        final_dv = 1'b0;
-        DVO      = dv_pp[1];
+        post_dv      = 1'b0;
+        final_dv     = 1'b0;
+        output_valid = dv_pp[1];
       end
+  endgenerate
+
+  logic [5:0] valid_cnt;
+
+  always_ff @(negedge RSTn, posedge CLK)
+    if (!RSTn)
+      valid_cnt <= 6'd0;
+    else begin
+      if (output_valid)
+        if (valid_cnt < RELEASE_CNT-1)
+          valid_cnt <= valid_cnt + 1;
+        else
+          valid_cnt <= 6'd0;
+    end
+
+  generate
+    if (MODE)
+      always_comb
+        if (output_valid && (valid_cnt == RELEASE_CNT-1))
+          DVO = 1'b1;
+        else
+          DVO = 1'b0;
+    else
+      always_comb
+        DVO = output_valid;
   endgenerate
 
 

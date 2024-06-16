@@ -1,6 +1,8 @@
 module mac #(
-  parameter MULTIPIER_SYNC_STAGES   = 0,
-  parameter ACCUMULATOR_SYNC_STAGES = 0
+  parameter             MULTIPIER_SYNC_STAGES   = 0   ,
+  parameter             ACCUMULATOR_SYNC_STAGES = 0   ,
+  parameter bit         ACC_CNT_RELEASE_MODE    = 1'b0,
+  parameter logic [5:0] ACC_RELEASE_CNT         = 6'd2
 ) (
   input               CLK    ,
   input               RSTn   ,
@@ -31,15 +33,20 @@ module mac #(
     release_pp <= {release_pp[MULTIPIER_SYNC_STAGES-2:0], RELEASE};
 
   generate
-    if (MULTIPIER_SYNC_STAGES == 0)
+    if (ACC_CNT_RELEASE_MODE)
       always_comb
-        acc_release = RELEASE;
-    else
-      always_comb
-        acc_release = release_pp[MULTIPIER_SYNC_STAGES-1];
+        acc_release = 1'b0;
+    else begin
+      if (MULTIPIER_SYNC_STAGES == 0)
+        always_comb
+          acc_release = RELEASE;
+      else
+        always_comb
+          acc_release = release_pp[MULTIPIER_SYNC_STAGES-1];
+    end
   endgenerate
 
-  acc #(ACCUMULATOR_SYNC_STAGES) accum (
+  acc #(ACCUMULATOR_SYNC_STAGES, ACC_CNT_RELEASE_MODE, ACC_RELEASE_CNT) accum (
     .CLK    (CLK        ),
     .RSTn   (RSTn       ),
     .DVI    (mul_dvo    ),
